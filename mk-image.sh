@@ -21,6 +21,9 @@ done
 
 sudo ./add-build-info.sh ${TARGET_ROOTFS_DIR}
 
+# Cross-build emulators are needed by hooks, but never by the native board.
+sudo rm -f -- "$TARGET_ROOTFS_DIR"/usr/bin/qemu-{arm,aarch64}-static{,~}
+
 # Apparent size + maxium alignment(file_count * block_size) + maxium journal size
 # Use -x / -xdev to avoid traversing any external mounts even in unexpected edge cases
 IMAGE_SIZE_MB=$(( $(sudo du -x --apparent-size -sm ${TARGET_ROOTFS_DIR} | cut -f1) + \

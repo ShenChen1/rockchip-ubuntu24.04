@@ -93,17 +93,25 @@ if [ "$TARGET" == "gnome" ]; then
 elif [ "$TARGET" == "xfce" ]; then
     \${APT_INSTALL} xubuntu-core rsyslog sudo dialog apt-utils ntp evtest udev
 elif [ "$TARGET" == "server" ]; then
-    \${APT_INSTALL} rsyslog sudo dialog apt-utils ntp evtest acpid
+    \${APT_INSTALL} rsyslog sudo dialog apt-utils ntp acpid
 elif [ "$TARGET" == "gnome-full" ]; then
     \${APT_INSTALL} ubuntu-desktop-minimal rsyslog sudo dialog apt-utils ntp evtest onboard
 elif [ "$TARGET" == "xfce-full" ]; then
     \${APT_INSTALL} xubuntu-desktop rsyslog sudo dialog apt-utils ntp evtest udev
 fi
 
-\${APT_INSTALL} net-tools openssh-server ifupdown psmisc alsa-utils network-manager gdb inetutils-ping libssl-dev \
-    vsftpd tcpdump can-utils i2c-tools strace vim iperf3 ethtool netplan.io toilet htop pciutils usbutils curl \
-    whiptail gnupg bc xinput gdisk parted gcc sox libsox-fmt-all gpiod libgpiod-dev python3-pip python3-libgpiod \
-    guvcview u-boot-tools bash-completion wget git python3 python3-venv util-linux-extra libgl1 libglib2.0-0
+\${APT_INSTALL} net-tools openssh-server ifupdown psmisc alsa-utils network-manager inetutils-ping \
+    vsftpd can-utils i2c-tools ethtool netplan.io toilet htop pciutils usbutils \
+    curl whiptail gnupg bc xinput gdisk parted sox libsox-fmt-all gpiod python3-libgpiod \
+    u-boot-tools bash-completion wget git python3 python3-venv util-linux-extra libgl1 libglib2.0-0 libportaudio2
+
+if [ "$TARGET" == "server" ]; then
+    \${APT_INSTALL} pulseaudio || exit \$?
+    # pip recommends build-essential and python3-dev; Hub uses prebuilt wheels.
+    \${APT_INSTALL} --no-install-recommends python3-pip vim-tiny || exit \$?
+else
+    \${APT_INSTALL} gcc gdb libssl-dev libgpiod-dev strace tcpdump iperf3 guvcview evtest python3-pip vim
+fi
 
 \${APT_INSTALL} ttf-wqy-zenhei xfonts-intl-chinese
 

@@ -102,6 +102,22 @@ install_packages() {
     esac
 }
 
+prune_vendor_packages() {
+    local packages_dir="$1" deb package_name
+    while IFS= read -r -d '' deb; do
+        if ! package_name=$(dpkg-deb --field "$deb" Package); then
+            echo "ERROR: Cannot read vendor package metadata: $deb" >&2
+            return 1
+        fi
+        case "$package_name" in
+            *-dbgsym|*-dev|rockchip-mpp-demos)
+                echo "Skipping non-runtime vendor package: $package_name"
+                sudo rm -- "$deb"
+                ;;
+        esac
+    done < <(find "$packages_dir" -type f -name '*.deb' -print0)
+}
+
 case "${ARCH:-$1}" in
     arm|arm32|armhf)
         ARCH=armhf
@@ -204,11 +220,17 @@ sudo mkdir -p $TARGET_ROOTFS_DIR/packages/install_packages
 sudo cp -rpfv packages/$ARCH/libmali/$MALI_PKG.deb $TARGET_ROOTFS_DIR/packages/install_packages
 sudo cp -rpfv packages/$ARCH/${ISP:0:5}/camera_engine_$ISP*.deb $TARGET_ROOTFS_DIR/packages/install_packages
 
+if [ "$VERSION" != "debug" ]; then
+    prune_vendor_packages "$TARGET_ROOTFS_DIR/packages"
+fi
+
 #linux kernel deb
 sudo mkdir -p "$TARGET_ROOTFS_DIR/boot/kerneldeb"
 sudo touch "$TARGET_ROOTFS_DIR/boot/build-host"
 sudo cp -vpf "$KERNEL_IMAGE_DEB" "$TARGET_ROOTFS_DIR/boot/kerneldeb/linux-image.deb"
-sudo cp -vpf "$KERNEL_HEADER_DEB" "$TARGET_ROOTFS_DIR/boot/kerneldeb/linux-headers.deb"
+if [ "$TARGET" != "server" ]; then
+    sudo cp -vpf "$KERNEL_HEADER_DEB" "$TARGET_ROOTFS_DIR/boot/kerneldeb/linux-headers.deb"
+fi
 
 # overlay folder
 sudo cp -rpf --no-preserve=ownership overlay/* $TARGET_ROOTFS_DIR/
@@ -264,7 +286,7 @@ fi
 
 \${APT_INSTALL} /packages/install_packages/*.deb
 
-if ! \${APT_INSTALL} /boot/kerneldeb/linux-image.deb /boot/kerneldeb/linux-headers.deb; then
+if ! \${APT_INSTALL} /boot/kerneldeb/*.deb; then
     echo "ERROR: Kernel deb installation failed; aborting rootfs build." >&2
     exit 1
 fi
@@ -291,14 +313,12 @@ elif [ "$TARGET" == "server" ]; then
     \${APT_INSTALL} /packages/gst-rkmpp/*.deb
 fi
 
-if [[ "$TARGET" == "gnome" || "$TARGET" == "gnome-full" ]]; then
+if [[ "$TARGET" == "gnome" || "$TARGET" == "gnome-full" || "$TARGET" == "xfce" || "$TARGET" == "xfce-full" ]]; then
     echo -e "\033[47;36m ----- Install Xserver------- \033[0m"
     \${APT_INSTALL} /packages/xserver/*.deb
-    apt-mark hold xserver-common xserver-xorg-core xserver-xorg-legacy xserver-xorg-dev
-elif [[ "$TARGET" == "xfce" || "$TARGET" == "xfce-full" ]]; then
-    echo -e "\033[47;36m ----- Install Xserver------- \033[0m"
-    \${APT_INSTALL} /packages/xserver/*.deb
-    apt-mark hold xserver-common xserver-xorg-core xserver-xorg-legacy xserver-xorg-dev
+    XSERVER_HOLD_PKGS=(xserver-common xserver-xorg-core xserver-xorg-legacy)
+    [ "$VERSION" != "debug" ] || XSERVER_HOLD_PKGS+=(xserver-xorg-dev)
+    apt-mark hold "\${XSERVER_HOLD_PKGS[@]}"
 fi
 
 if [[ "$TARGET" == "gnome" ||  "$TARGET" == "xfce" || "$TARGET" == "gnome-full" || "$TARGET" == "xfce-full" ]]; then
@@ -331,7 +351,15 @@ fi
 
 if [ -e "/usr/lib/aarch64-linux-gnu" ] ; then
 echo -e "\033[47;36m ----- unpack rknpu2 --------- \033[0m"
-tar --no-same-owner -xf /packages/rknpu2/rknpu2.tar -C /
+NPU_FILES=()
+if [ "$VERSION" != "debug" ]; then
+    NPU_FILES=(./usr/lib/librknnrt.so ./usr/bin/rknn_server
+        ./usr/bin/start_rknn.sh ./usr/bin/restart_rknn.sh)
+fi
+if ! tar --no-same-owner -xf /packages/rknpu2/rknpu2.tar -C / "\${NPU_FILES[@]}"; then
+    echo "ERROR: NPU runtime extraction failed; aborting rootfs build." >&2
+    exit 1
+fi
 ldconfig
 fi
 
