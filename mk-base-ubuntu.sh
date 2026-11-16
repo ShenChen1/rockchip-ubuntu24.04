@@ -48,17 +48,12 @@ if [ ! -d $TARGET_ROOTFS_DIR ] ; then
 
     if [ ! -e ubuntu-base-${UBUNTU_RELEASE}-base-$ARCH.tar.gz ]; then
         echo "\033[36m wget ubuntu-base-${UBUNTU_RELEASE}-base-"$ARCH".tar.gz \033[0m"
-		wget -c http://cdimage.ubuntu.com/ubuntu-base/releases/${UBUNTU_VERSION}/release/ubuntu-base-${UBUNTU_RELEASE}-base-$ARCH.tar.gz
+		wget -c https://mirrors.ustc.edu.cn/ubuntu-cdimage/ubuntu-base/releases/${UBUNTU_VERSION}/release/ubuntu-base-${UBUNTU_RELEASE}-base-$ARCH.tar.gz
     fi
     sudo tar -xpf ubuntu-base-${UBUNTU_RELEASE}-base-$ARCH.tar.gz -C $TARGET_ROOTFS_DIR/
     sudo cp -L /etc/resolv.conf $TARGET_ROOTFS_DIR/etc/resolv.conf
-    sudo tee $TARGET_ROOTFS_DIR/etc/apt/sources.list.d/ubuntu.sources << 'EOF'
-Types: deb
-URIs: http://ports.ubuntu.com/ubuntu-ports/
-Suites: noble noble-updates noble-security noble-backports
-Components: main restricted universe multiverse
-Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
-EOF
+    sudo cp overlay/etc/apt/sources.list.d/ubuntu.sources \
+        $TARGET_ROOTFS_DIR/etc/apt/sources.list.d/ubuntu.sources
 
     if [ "$ARCH" == "armhf" ]; then
 	    sudo cp -b /usr/bin/qemu-arm-static $TARGET_ROOTFS_DIR/usr/bin/
@@ -89,7 +84,7 @@ apt-get -y update
 apt-get -f -y upgrade
 
 if [ "$TARGET" == "gnome" ]; then
-   \${APT_INSTALL} ubuntu-desktop-minimal rsyslog sudo dialog apt-utils ntp evtest onboard language-pack-en-base ssh iputils-ping systemd
+    \${APT_INSTALL} ubuntu-desktop-minimal rsyslog sudo dialog apt-utils ntp evtest onboard language-pack-en-base ssh iputils-ping systemd
 elif [ "$TARGET" == "xfce" ]; then
     \${APT_INSTALL} xubuntu-core rsyslog sudo dialog apt-utils ntp evtest udev
 elif [ "$TARGET" == "server" ]; then
