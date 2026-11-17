@@ -423,7 +423,7 @@ sed -i '/^[^#].*pam_lastlog\.so/s/^/# /' /etc/pam.d/login
 echo -e "\033[47;36m  ---------- Clean ----------- \033[0m"
 # fix: MACAddressPolicy
 truncate -s 0 /etc/machine-id
-truncate -s 0 /var/lib/dbus/machine-id 2>/dev/null || true
+ln -Tsf /etc/machine-id /var/lib/dbus/machine-id
 # fix: REMOTE HOST IDENTIFICATION HAS CHANGED
 rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub
 
