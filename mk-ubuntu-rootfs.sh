@@ -247,6 +247,9 @@ fi
 ## hack the serial
 sudo cp -f overlay/usr/lib/systemd/system/serial-getty@.service $TARGET_ROOTFS_DIR/lib/systemd/system/serial-getty@.service
 
+## hack the qt5 runtime
+sudo install -m 0755 add-graphics.sh "$TARGET_ROOTFS_DIR/tmp/add-graphics.sh"
+
 echo -e "\033[47;36m Change root.....................\033[0m"
 if [ "$ARCH" == "armhf" ]; then
     sudo cp /usr/bin/qemu-arm-static $TARGET_ROOTFS_DIR/usr/bin/
@@ -256,7 +259,7 @@ fi
 
 ./ch-mount.sh -m $TARGET_ROOTFS_DIR
 
-cat << EOF | sudo chroot $TARGET_ROOTFS_DIR
+cat << EOF | sudo chroot "$TARGET_ROOTFS_DIR" /bin/bash
 
 apt-get update
 apt-get upgrade -y
@@ -336,9 +339,6 @@ if [[ "$TARGET" == "gnome" ||  "$TARGET" == "xfce" || "$TARGET" == "gnome-full" 
     # \${APT_INSTALL} /packages/firefox/*.deb
 fi
 
-echo -e "\033[47;36m ------- Install libdrm ------ \033[0m"
-\${APT_INSTALL} /packages/libdrm/*.deb
-
 if [[ "$TARGET" == "gnome" ||  "$TARGET" == "xfce" || "$TARGET" == "gnome-full" || "$TARGET" == "xfce-full" ]]; then
     echo -e "\033[47;36m ------ libdrm-cursor -------- \033[0m"
     \${APT_INSTALL} /packages/libdrm-cursor/*.deb
@@ -383,6 +383,10 @@ Pin-Priority: 1001' | tee /etc/apt/preferences.d/mozilla-firefox && \
     apt-get update && \${APT_INSTALL} firefox
 fi
 
+echo -e "\033[47;36m ------- Install graphics ------ \033[0m"
+/tmp/add-graphics.sh install || exit 1
+rm -f /tmp/add-graphics.sh
+
 # mark package to hold
 apt list --upgradable | cut -d/ -f1 | xargs apt-mark hold
 
@@ -417,25 +421,6 @@ fi
 sed -i '/^[^#].*pam_lastlog\.so/s/^/# /' /etc/pam.d/login
 
 echo -e "\033[47;36m  ---------- Clean ----------- \033[0m"
-if [ -e "/usr/lib/arm-linux-gnueabihf/dri" ] ;
-then
-    # Only preload libdrm-cursor for X
-    sed -i "1aexport LD_PRELOAD=/usr/lib/arm-linux-gnueabihf/libdrm-cursor.so.1" /usr/bin/X
-    cd /usr/lib/arm-linux-gnueabihf/dri/
-    cp kms_swrast_dri.so swrast_dri.so rockchip_dri.so /
-    rm /usr/lib/arm-linux-gnueabihf/dri/*.so
-    mv /*.so /usr/lib/arm-linux-gnueabihf/dri/
-elif [ -e "/usr/lib/aarch64-linux-gnu/dri" ];
-then
-    # Only preload libdrm-cursor for X
-    sed -i "1aexport LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libdrm-cursor.so.1" /usr/bin/X
-    cd /usr/lib/aarch64-linux-gnu/dri/
-    cp kms_swrast_dri.so swrast_dri.so rockchip_dri.so /
-    rm /usr/lib/aarch64-linux-gnu/dri/*.so
-    mv /*.so /usr/lib/aarch64-linux-gnu/dri/
-    rm /etc/profile.d/qt.sh
-fi
-
 # fix: MACAddressPolicy
 truncate -s 0 /etc/machine-id
 truncate -s 0 /var/lib/dbus/machine-id 2>/dev/null || true

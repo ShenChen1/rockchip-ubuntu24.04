@@ -98,7 +98,7 @@ fi
 \${APT_INSTALL} net-tools openssh-server ifupdown psmisc alsa-utils network-manager inetutils-ping \
     vsftpd can-utils i2c-tools ethtool netplan.io toilet htop pciutils usbutils \
     curl whiptail gnupg bc xinput gdisk parted sox libsox-fmt-all gpiod python3-libgpiod \
-    u-boot-tools bash-completion wget git python3 python3-venv util-linux-extra libgl1 libglib2.0-0 libportaudio2
+    u-boot-tools bash-completion wget git python3 python3-venv util-linux-extra libgl1 libglib2.0-0 ffmpeg libportaudio2
 
 if [ "$TARGET" == "server" ]; then
     \${APT_INSTALL} pulseaudio || exit \$?
