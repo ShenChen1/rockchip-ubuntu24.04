@@ -2,7 +2,7 @@
 
 TARGET_ROOTFS_DIR=./binary
 
-if [ $RK_ROOTFS_IMAGE ]; then
+if [ -n "${RK_ROOTFS_IMAGE:-}" ]; then
 	ROOTFSIMAGE=$RK_ROOTFS_IMAGE
 else
 	ROOTFSIMAGE=ubuntu-$SOC-$TARGET-rootfs.img
@@ -10,16 +10,16 @@ fi
 
 echo Making rootfs!
 
-if [ -e ${ROOTFSIMAGE} ]; then
-	rm -f ${ROOTFSIMAGE}
+if [ -e "${ROOTFSIMAGE}" ]; then
+	rm -f "${ROOTFSIMAGE}"
 fi
 
-for script in ./post-build.sh ../device/rockchip/common/post-build.sh; do
-	[ -x "$script" ] || continue
-	sudo "$script" "$(realpath "$TARGET_ROOTFS_DIR")"
-done
-
-sudo ./add-build-info.sh ${TARGET_ROOTFS_DIR}
+COMMON_POST_BUILD="../device/rockchip/common/post-build.sh"
+[ -x "$COMMON_POST_BUILD" ] || {
+	echo "ERROR: Missing common post-build hook: $COMMON_POST_BUILD" >&2
+	exit 1
+}
+sudo "$COMMON_POST_BUILD" "$(realpath "$TARGET_ROOTFS_DIR")"
 
 # Cross-build emulators are needed by hooks, but never by the native board.
 sudo rm -f -- "$TARGET_ROOTFS_DIR"/usr/bin/qemu-{arm,aarch64}-static{,~}
@@ -30,8 +30,8 @@ IMAGE_SIZE_MB=$(( $(sudo du -x --apparent-size -sm ${TARGET_ROOTFS_DIR} | cut -f
 	$(sudo find ${TARGET_ROOTFS_DIR} -xdev | wc -l) * 4 / 1024 + 64 ))
 
 # Extra 10%
-IMAGE_SIZE_MB=$(( $IMAGE_SIZE_MB * 110 / 100 ))
+IMAGE_SIZE_MB=$(( IMAGE_SIZE_MB * 110 / 100 ))
 
-sudo mkfs.ext4 -d ${TARGET_ROOTFS_DIR} ${ROOTFSIMAGE} ${IMAGE_SIZE_MB}M
+sudo mkfs.ext4 -d "${TARGET_ROOTFS_DIR}" "${ROOTFSIMAGE}" "${IMAGE_SIZE_MB}M"
 
-echo Rootfs Image: ${ROOTFSIMAGE}
+echo Rootfs Image: "${ROOTFSIMAGE}"
