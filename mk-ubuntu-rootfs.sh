@@ -439,6 +439,8 @@ fi
 # fix: MACAddressPolicy
 truncate -s 0 /etc/machine-id
 truncate -s 0 /var/lib/dbus/machine-id 2>/dev/null || true
+# fix: REMOTE HOST IDENTIFICATION HAS CHANGED
+rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub
 
 rm -rf /home/$(whoami)
 rm -f /*.deb /*.tar
