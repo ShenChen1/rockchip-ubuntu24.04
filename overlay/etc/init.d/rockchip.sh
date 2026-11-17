@@ -55,27 +55,11 @@ boardname="${compatible%%rockchip,*}"
 # #usb configfs reset
 # /usr/bin/usbdevice restart
 
-# support power management
-if [ -e "/usr/sbin/pm-suspend" ] && [ -e /etc/Powermanager ]; then
-    if [ "$chipname" == "rk3399pro" ]; then
-        mv /etc/Powermanager/01npu /usr/lib/pm-utils/sleep.d/
-        mv /etc/Powermanager/02npu /lib/systemd/system-sleep/
-        service input-event-daemon restart
-    fi
-    rm -rf /etc/Powermanager
-fi
-
 # Create dummy video node for chromium V4L2 VDA/VEA with rkmpp plugin
 echo dec > /dev/video-dec0
 echo enc > /dev/video-enc0
 chmod 660 /dev/video-*
 chown root:video /dev/video-*
-
-# The chromium using fixed pathes for libv4l2.so
-ln -rsf /usr/lib/*/libv4l2.so /usr/lib/
-if [ -e /usr/lib/aarch64-linux-gnu/ ]; then
-    ln -Tsf lib /usr/lib64
-fi
 
 # sync system time
 hwclock --systohc

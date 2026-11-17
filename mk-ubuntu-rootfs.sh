@@ -403,6 +403,16 @@ find /etc /usr -xdev \( -nouser -o -nogroup \) -exec chown -h root:root {} +
 find /etc /usr -xdev ! -type l -perm -0002 ! -perm -1000 -exec chmod go-w {} +
 [ ! -d /etc/netplan ] || find /etc/netplan -maxdepth 1 -type f -name '*.yaml' -exec chmod 0600 {} +
 
+if [ -e /usr/sbin/pm-suspend ] && [ -e /etc/Powermanager ]; then
+    rm -rf /etc/Powermanager
+fi
+if compgen -G "/usr/lib/*/libv4l2.so" >/dev/null; then
+    ln -rsf /usr/lib/*/libv4l2.so /usr/lib/
+fi
+if [ -e /usr/lib/aarch64-linux-gnu/ ]; then
+    ln -Tsf lib /usr/lib64
+fi
+
 # Ubuntu 24.04 no longer ships pam_lastlog.so.
 sed -i '/^[^#].*pam_lastlog\.so/s/^/# /' /etc/pam.d/login
 
@@ -433,7 +443,11 @@ truncate -s 0 /var/lib/dbus/machine-id 2>/dev/null || true
 rm -rf /home/$(whoami)
 rm -f /*.deb /*.tar
 rm -rf /var/lib/apt/lists/*
-rm -rf /var/cache/
+rm -rf /var/cache/*
+mkdir -p -m 0755 /var/cache
+mkdir -p -m 0700 /var/cache/private
+ldconfig
+journalctl --update-catalog 2>/dev/null || true
 rm -rf /packages/
 rm -rf /boot/*
 rm -rf /root/.bash_history
