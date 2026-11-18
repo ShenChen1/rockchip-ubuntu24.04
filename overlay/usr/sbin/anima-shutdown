@@ -1,0 +1,321 @@
+#!/bin/busybox sh
+# Final shutdown handler executed as PID 1 inside the /run/initramfs tmpfs
+# after systemd stops services and pivots off the old root (/oldroot).
+# Contract staged by anima-init:
+#   /devices          -> "<oldroot_maj:min> <storage_maj:min>" recorded at boot
+#   /overlay-storage  -> non-recursive bind of the shared ext4 partition
+set -u
+export PATH=/bin LC_ALL=C
+BB=/bin/busybox
+OLD_ROOT=/oldroot
+STORAGE=/overlay-storage
+# Default cleanup timeout in centiseconds (1000 = 10s); capped if watchdog is active.
+CLEANUP_TICKS=1000
+UNMOUNT_ATTEMPTS=3
+
+log()
+{
+	local message=$1 priority=${2:-3}
+	printf 'anima-shutdown: %s\n' "$message" >&2
+	# journald is gone. Keep console output and best-effort kernel diagnostics.
+	if [ -w /dev/kmsg ]; then
+		printf '<%s>anima-shutdown: %s\n' "$priority" "$message" 2>/dev/null > /dev/kmsg || :
+	fi
+}
+
+close_old_fds()
+{
+	# Inherited descriptors can pin oldroot even when every pathname is unmounted.
+	# POSIX sh lacks dynamic redirection ({fd}>&-), so validate digits and eval; keep 0/1/2.
+	local entry fd
+	for entry in /proc/1/fd/*; do
+		fd=${entry##*/}
+		case "$fd" in ''|*[!0-9]*|0|1|2) continue ;; esac
+		eval "exec $fd>&-"
+	done
+}
+
+visible_mount_id()
+(
+	# Path text alone cannot distinguish stacked mounts or file bind aliases.
+	# Opening in a subshell identifies the visible mount and releases the probe FD.
+	# Never open devices or FIFOs: probing could trigger driver I/O or block.
+	[ ! -L "$1" ] && { [ -d "$1" ] || [ -f "$1" ]; } || exit 1
+	exec 8< "$1" || exit 1
+	$BB awk '$1 == "mnt_id:" {print $2; found = 1} END {exit !found}' /proc/self/fdinfo/8
+)
+
+mount_matches()
+{
+	# /proc/self/mountinfo columns:
+	#   $1=mount_id $2=parent_id $3=MAJ:MIN $5=mountpoint ... '-' $fstype
+	# Optional tags before '-' vary in count, so scan until '-' to find fstype.
+	local id
+	id=$(visible_mount_id "$1") || return 1
+	$BB awk -v id="$id" -v device="$2" -v type="$3" '
+		$1 == id && $3 == device {
+			for (i = 7; i < NF; i++) if ($i == "-" && $(i + 1) == type) found = 1
+		}
+		END {exit !found}
+	' /proc/self/mountinfo
+}
+
+check_layout()
+{
+	# stat -f prints TMPFS_MAGIC in hex; /devices contains the two MAJ:MIN values
+	# recorded before systemd took over, not partition names chosen at shutdown.
+	local extra target
+	[ "$($BB stat -f -c %t /)" = 1021994 ] && [ ! -L /devices ] || return 1
+	read -r OLD_DEVICE STORAGE_DEVICE extra < /devices || return 1
+	[ -z "$extra" ] || return 1
+	printf '%s\n' "$OLD_DEVICE" "$STORAGE_DEVICE" |
+		$BB awk '!/^[0-9]+:[0-9]+$/ {bad = 1} END {exit bad}' || return 1
+	mount_matches "$OLD_ROOT" "$OLD_DEVICE" overlay || return 1
+	mount_matches "$STORAGE" "$STORAGE_DEVICE" ext4 || return 1
+	# Track /sys/fs/ext4/<dev>: it disappears only when the last kernel ext4 ref drops
+	# (including mounts hidden inside other namespaces).
+	target=$($BB readlink -f "/sys/dev/block/$STORAGE_DEVICE") || return 1
+	SUPERBLOCK=/sys/fs/ext4/${target##*/}
+	[ -d "$SUPERBLOCK" ]
+}
+
+read_mounts()
+{
+	# Collect mounts to peel off before closing /overlay-storage:
+	#   1) /oldroot and paths under /oldroot/
+	#   2) any mount backed by STORAGE_DEVICE (including aliases moved outside /oldroot)
+	#   3) any remaining overlayfs mounts
+	# Then transitively propagate selection from parents to children so nested
+	# submounts block nothing above them. Only leaf mounts (!children[id]) are
+	# unmounted per pass; cleanup_mounts re-reads mountinfo until empty.
+	$BB awk -v storage="$STORAGE_DEVICE" -v root="$OLD_ROOT" '
+		{
+			parent[$1] = $2; device[$1] = $3; path[$1] = $5; children[$2] = 1
+			for (i = 7; i < NF; i++) if ($i == "-") {type = $(i + 1); break}
+			selected[$1] = ($5 == root || index($5, root "/") == 1 || $3 == storage || type == "overlay")
+		}
+		END {
+			do {
+				changed = 0
+				for (id in path) if (!selected[id] && selected[parent[id]]) {
+					selected[id] = 1; changed = 1
+				}
+			} while (changed)
+			for (id in path) if (selected[id]) print id, device[id], path[id], !children[id]
+		}
+	' /proc/self/mountinfo > /mounts.pending
+}
+
+unmount_entry()
+{
+	local path visible display
+	# Preserve trailing newlines while decoding mountinfo octal escapes.
+	path=$(printf '%b.' "$3")
+	path=${path%.}
+	# BusyBox builds may omit tr character classes; use the ASCII printable range.
+	display=$(printf '%s' "$path" | $BB tr -c '\040-\176' '?')
+	if ! visible=$(visible_mount_id "$path"); then
+		log "cannot inspect mount: $display ($2, mount ID $1): missing/unsupported node or unreadable mount ID"
+		return 1
+	fi
+	if [ "$visible" != "$1" ]; then
+		log "mount ID mismatch: $display ($2): expected $1, found $visible"
+		return 1
+	fi
+	# -n avoids writing /etc/mtab in read-only/tmpfs root; never use lazy umount (-l).
+	$BB umount -n -- "$path" && return 0
+	log "unmount failed: $display ($2)"
+	return 1
+}
+
+cleanup_mounts()
+{
+	# Peel selected mounts bottom-up while preserving $STORAGE until last so
+	# ext4 gets an explicit sync -f before final unmount; verify nothing remains.
+	local id device path leaf pending progress
+	while :; do
+		read_mounts || return 1
+		pending=0 progress=0
+		while read -r id device path leaf; do
+			[ "$path" != "$STORAGE" ] || continue
+			pending=1
+			[ "$leaf" = 1 ] || continue
+			if unmount_entry "$id" "$device" "$path"; then progress=1; fi
+		done < /mounts.pending
+		[ "$pending" = 1 ] || break
+		[ "$progress" = 1 ] || return 1
+	done
+	mount_matches "$STORAGE" "$STORAGE_DEVICE" ext4 || return 1
+	$BB sync -f "$STORAGE" && $BB umount -n "$STORAGE" || return 1
+	read_mounts && [ ! -s /mounts.pending ]
+}
+
+clean_shutdown()
+{
+	# Retry bounded non-blocking unmounts (processes/refs finishing asynchronously).
+	# On failure, salvage consistency via sync + remount,ro when storage is intact.
+	local attempt=0
+	if ! check_layout; then log 'unexpected shutdown mount layout'; return 1; fi
+	while [ "$attempt" -lt "$UNMOUNT_ATTEMPTS" ]; do
+		if cleanup_mounts; then
+			# Another namespace may still pin ext4 after our mount table is empty.
+			[ -d "$SUPERBLOCK" ] || return 0
+			log "overlay ext4 still active ($STORAGE_DEVICE)"
+			break
+		fi
+		attempt=$((attempt + 1))
+		$BB sleep 0.2
+	done
+	if mount_matches "$STORAGE" "$STORAGE_DEVICE" ext4; then
+		$BB sync -f "$STORAGE"
+		$BB mount -n -o remount,ro "$STORAGE" || log 'cannot remount overlay storage read-only'
+	fi
+	return 1
+}
+
+read_watchdog_budget()
+{
+	local seconds
+	if ! { IFS= read -r seconds < "$1"; } 2>/dev/null; then
+		log 'cannot read watchdog timeout; skipping cleanup'
+		return 1
+	fi
+	case "$seconds" in
+		''|*[!0-9]*|0*) log 'invalid watchdog timeout; skipping cleanup'; return 1 ;;
+	esac
+	if [ "${#seconds}" -gt 10 ] || [ "$seconds" -gt 2147483647 ]; then
+		log 'invalid watchdog timeout; skipping cleanup'
+		return 1
+	fi
+	# Centiseconds preserve a half-second window for a one-second watchdog.
+	# Cap before multiplication; sysfs seconds must be canonical positive decimals.
+	CLEANUP_TICKS=1000
+	[ "$seconds" -ge 20 ] || CLEANUP_TICKS=$((seconds * 50))
+}
+
+resolve_watchdog_timeout()
+{
+	local device=$1 number major minor
+	# /dev/watchdog is misc device 10:130 whose sysfs tree lacks timeout; use watchdog0.
+	if [ "$device" = /dev/watchdog ]; then
+		printf '%s\n' /sys/class/watchdog/watchdog0/timeout
+		return 0
+	fi
+	number=$($BB stat -L -c '%t %T' "$device" 2>/dev/null) || return 1
+	case "$number" in
+		*' '*) ;;
+		*) return 1 ;;
+	esac
+	major=${number%% *}
+	minor=${number#* }
+	[ -n "$major" ] && [ -n "$minor" ] || return 1
+	case "$major$minor" in
+		*[!0-9a-fA-F]*) return 1 ;;
+	esac
+	# stat reports character-device numbers in hex; sysfs uses decimal.
+	printf '/sys/dev/char/%d:%d/timeout\n' "0x$major" "0x$minor" 2>/dev/null
+}
+
+resume_watchdog()
+{
+	# WATCHDOG_USEC gates handoff; sysfs provides the actual hardware timeout.
+	# Drop CLEANUP_TICKS to 0 while resuming so unknown deadlines or failed
+	# handoffs skip cleanup rather than blocking past a short hardware timer.
+	local device=${WATCHDOG_DEVICE:-/dev/watchdog0} timeout=${WATCHDOG_USEC:-0} timeout_path
+	WATCHDOG_OPEN=0
+	case "$timeout" in ''|*[!0-9]*) return ;; esac
+	case "$timeout" in *[1-9]*) ;; *) return ;; esac
+	CLEANUP_TICKS=0
+	if [ -z "${WATCHDOG_DEVICE:-}" ] && [ ! -c "$device" ]; then device=/dev/watchdog; fi
+	[ -c "$device" ] || { log 'watchdog device unavailable'; return; }
+	if timeout_path=$(resolve_watchdog_timeout "$device"); then
+		read_watchdog_budget "$timeout_path" || :
+	else
+		# Still open/ping the watchdog below even if sysfs resolution failed.
+		log 'cannot inspect watchdog device; skipping cleanup'
+	fi
+	# Keep FD 9 open across cleanup and send an immediate keepalive ping (\000).
+	if command exec 9> "$device"; then
+		WATCHDOG_OPEN=1
+		if ! printf '\000' >&9; then
+			CLEANUP_TICKS=0
+			log 'watchdog keepalive failed'
+		fi
+	else
+		CLEANUP_TICKS=0
+		log 'cannot resume watchdog'
+	fi
+}
+
+uptime_ticks()
+{
+	# /proc/uptime has two fractional digits. Prefixing 1 avoids interpreting
+	# leading zeroes as octal while converting the fraction to centiseconds.
+	local seconds fraction rest
+	read -r seconds rest < /proc/uptime || return 1
+	fraction=${seconds#*.}
+	printf '%s\n' "$(( ${seconds%.*} * 100 + (1$fraction - 100) ))"
+}
+
+wait_for_cleanup()
+{
+	# PID 1 must remain able to reboot if sync/umount stalls in the worker.
+	# Killing the worker cannot resolve uninterruptible I/O or prove a clean exit.
+	local child=$1 deadline now
+	deadline=$(uptime_ticks) || return 1
+	deadline=$((deadline + CLEANUP_TICKS))
+	while [ ! -s /cleanup.status ]; do
+		now=$(uptime_ticks) || break
+		[ "$now" -lt "$deadline" ] || break
+		kill -0 "$child" 2>/dev/null || break
+		$BB sleep 0.1
+	done
+	if [ -s /cleanup.status ]; then
+		read -r status < /cleanup.status
+		[ "$status" = 0 ]
+	else
+		log 'cleanup timed out'
+		kill -KILL "$child" 2>/dev/null || :
+		return 1
+	fi
+}
+
+finish_shutdown()
+{
+	# SDK BusyBox lacks RESTART2. Warn rather than claiming a bootloader/recovery
+	# argument was honored; -nf performs the kernel action without another sync.
+	local action=$1
+	if [ "$action" = reboot ] && [ -s /run/systemd/reboot-param ]; then
+		log 'reboot argument unsupported; using normal reboot'
+	fi
+	[ "$WATCHDOG_OPEN" = 0 ] || printf '\000' >&9 || log 'watchdog keepalive failed'
+	$BB "$action" -nf
+	log 'final kernel action failed'
+	while :; do $BB sleep 3600; done
+}
+
+# Test fixtures split on the exact PID 1 check line below to source helper functions.
+if [ "$$" != 1 ]; then log 'must run as PID 1'; exit 1; fi
+cd / || exit 1
+action=${1:-reboot}
+case "$action" in
+	reboot|poweroff|halt) ;;
+	exit) action=poweroff ;;
+	*) log 'unsupported action, using reboot'; action=reboot ;;
+esac
+close_old_fds
+resume_watchdog
+status=1
+if [ "$CLEANUP_TICKS" -gt 0 ]; then
+	# Run unmount/sync in a child so PID 1 stays responsive to timeouts and reboot().
+	( clean_shutdown; printf '%s\n' "$?" > /cleanup.status ) &
+	wait_for_cleanup "$!" && status=0
+else
+	log 'cleanup skipped: no safe watchdog window'
+fi
+if [ "$status" = 0 ]; then
+	log "overlay storage cleanly unmounted; $action" 5
+else
+	log "non-clean shutdown; $action"
+fi
+finish_shutdown "$action"
