@@ -12,6 +12,7 @@ STORAGE=/overlay-storage
 # Default cleanup timeout in centiseconds (1000 = 10s); capped if watchdog is active.
 CLEANUP_TICKS=1000
 UNMOUNT_ATTEMPTS=3
+REBOOT_ARGUMENT_MAX=255
 
 log()
 {
@@ -280,15 +281,45 @@ wait_for_cleanup()
 	fi
 }
 
+read_reboot_argument()
+{
+	local path=/run/systemd/reboot-param argument size
+	[ -e "$path" ] || [ -L "$path" ] || return 0
+	if [ ! -f "$path" ] || [ -L "$path" ]; then
+		log 'invalid reboot argument file; using normal reboot'
+		return 1
+	fi
+	size=$($BB stat -c %s "$path") || return 1
+	if [ "$size" -gt "$((REBOOT_ARGUMENT_MAX + 1))" ]; then
+		log 'invalid reboot argument length; using normal reboot'
+		return 1
+	fi
+	# Shell variables discard NUL bytes; reject them before reading the argument.
+	if [ "$($BB tr -d '\000' < "$path" | $BB wc -c)" -ne "$size" ]; then
+		log 'invalid reboot argument bytes; using normal reboot'
+		return 1
+	fi
+	argument=$($BB cat "$path") || { log 'cannot read reboot argument; using normal reboot'; return 1; }
+	case "$argument" in
+		*[![:print:]]*) log 'invalid reboot argument bytes; using normal reboot'; return 1 ;;
+	esac
+	if [ "${#argument}" -gt "$REBOOT_ARGUMENT_MAX" ]; then
+		log 'invalid reboot argument length; using normal reboot'
+		return 1
+	fi
+	printf '%s' "$argument"
+}
+
 finish_shutdown()
 {
-	# SDK BusyBox lacks RESTART2. Warn rather than claiming a bootloader/recovery
-	# argument was honored; -nf performs the kernel action without another sync.
-	local action=$1
-	if [ "$action" = reboot ] && [ -s /run/systemd/reboot-param ]; then
-		log 'reboot argument unsupported; using normal reboot'
-	fi
+	local action=$1 argument=
+	if [ "$action" = reboot ]; then argument=$(read_reboot_argument) || argument=; fi
 	[ "$WATCHDOG_OPEN" = 0 ] || printf '\000' >&9 || log 'watchdog keepalive failed'
+	# Cleanup is complete. Keep the parameter one argument and avoid another sync.
+	if [ -n "$argument" ]; then
+		$BB reboot -nf -- "$argument"
+		log 'parameterized reboot failed; using normal reboot'
+	fi
 	$BB "$action" -nf
 	log 'final kernel action failed'
 	while :; do $BB sleep 3600; done
