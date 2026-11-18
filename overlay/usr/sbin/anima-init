@@ -1,0 +1,296 @@
+#!/bin/bash
+set -Eeuo pipefail
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+# Stage-1 PID 1 init for a read-only ext4 root slot + shared overlay partition.
+# Before pivot_root, NEW_ROOT is the future /. Moving /run afterwards keeps
+# root-ro and overlay reachable at the same paths used by OverlayFS options:
+#   /run/anima/root-ro       -> bind mount of the read-only root slot (lowerdir)
+#   /run/anima/overlay       -> shared RW ext4 overlay partition (also /overlay)
+#   /overlay/.anima-volatile-root -> per-boot wiped OverlayFS upper/work for /
+#   /overlay/.anima-persistent    -> durable identity, .pending txns, and dirs
+#   /run/initramfs           -> 4M tmpfs staging BusyBox + anima-shutdown
+STATE=/run/anima
+OVERLAY_STORAGE=$STATE/overlay
+CACHE=$OVERLAY_STORAGE/.anima-volatile-root
+CACHE_VERSION=anima-volatile-root-v1
+PERSISTENT=$OVERLAY_STORAGE/.anima-persistent
+NEW_ROOT=$STATE/newroot
+OLD_ROOT=/.anima-oldroot
+# Disable kernel features that bind OverlayFS state to lower/upper inode or
+# file-handle identities, which change across reboots and A/B slot switches.
+OVERLAY_OPTIONS=index=off,metacopy=off,redirect_dir=nofollow,xino=off,nfs_export=off
+CONFIG_PATH=etc/anima/persistent.conf
+# Sourced helpers consume the globals above and report fatal errors via emergency().
+# shellcheck source=../lib/anima/persistent-storage.sh
+source /usr/lib/anima/persistent-storage.sh
+# shellcheck source=../lib/anima/persistent-config.sh
+source /usr/lib/anima/persistent-config.sh
+
+emergency()
+{
+	# Never continue with disposable replacements for missing persistent data.
+	# Stay as PID 1; platform watchdog recovery is configured outside this script.
+	echo "anima-init: ERROR: $*; normal boot stopped" >&2
+	trap - ERR
+	while :; do sleep 3600; done
+}
+
+mount_api_filesystems()
+{
+	findmnt -rn -M /proc >/dev/null 2>&1 || mount -t proc proc /proc
+	findmnt -rn -M /sys >/dev/null || mount -t sysfs sysfs /sys
+	findmnt -rn -M /dev >/dev/null || mount -t devtmpfs devtmpfs /dev
+	mount --make-rprivate /
+}
+
+protect_root()
+{
+	# A read-only ext4 mount can still replay its journal without noload.
+	# Check the kernel's initial mount before adding block-device write protection.
+	local options device_number device
+	[ "$(findmnt -rn -o FSTYPE -M /)" = ext4 ] || emergency "root must be ext4"
+	# Pad with commas so substring matches cannot confuse e.g. norecovery with ro.
+	options=,$(findmnt -rn -o OPTIONS -M /),
+	case "$options" in
+		*,ro,*) ;;
+		*) emergency "root must already be read-only" ;;
+	esac
+	case "$options" in
+		*,noload,*|*,norecovery,*) ;;
+		*) emergency "root must use noload" ;;
+	esac
+	# Lock the underlying block device read-only so nothing in userspace can write
+	# directly to the active system slot after stage-1 hands off to systemd.
+	device_number=$(findmnt -rn -o MAJ:MIN -M /)
+	ROOT_SYS_PATH=$(readlink -f "/sys/dev/block/$device_number")
+	device=/dev/${ROOT_SYS_PATH##*/}
+	[ -b "$device" ] || emergency "root block device is unavailable"
+	blockdev --setro "$device"
+	[ "$(blockdev --getro "$device")" = 1 ] || emergency "root block protection failed"
+}
+
+prepare_runtime()
+{
+	if findmnt -rn -M /run >/dev/null; then
+		emergency "unexpected existing /run mount; use the boot image without initramfs"
+	fi
+	mount -t tmpfs -o mode=0755,nosuid,nodev,size=128M tmpfs /run
+	mkdir -m 0700 "$STATE"
+	mkdir "$STATE/root-ro" "$OVERLAY_STORAGE" "$STATE/init-root" "$NEW_ROOT"
+	mount --bind / "$STATE/root-ro"
+}
+
+find_overlay_partition()
+{
+	# Scope PARTNAME lookup to the root disk so a removable disk cannot win.
+	# Export OVERLAY_DEVICE_NUMBER (MAJ:MIN) for shutdown verification in /devices.
+	local entry partition name count=0
+	[ -f "$ROOT_SYS_PATH/partition" ] || emergency "root must be a disk partition"
+	for entry in "${ROOT_SYS_PATH%/*}"/*/partition; do
+		[ -f "$entry" ] || continue
+		partition=${entry%/partition}
+		name=$(awk -F= '$1 == "PARTNAME" {print $2}' "$partition/uevent")
+		[ "$name" = overlay ] || continue
+		OVERLAY_DEVICE=/dev/${partition##*/}
+		OVERLAY_DEVICE_NUMBER=$(cat "$partition/dev")
+		count=$((count + 1))
+	done
+	[ "$count" = 1 ] || emergency "expected one overlay partition on root disk"
+}
+
+mount_overlay_storage()
+{
+	local status=0
+	[ -b "$OVERLAY_DEVICE" ] || emergency "overlay block device is unavailable"
+	if findmnt -rn -o MAJ:MIN | grep -Fx "$OVERLAY_DEVICE_NUMBER" >/dev/null; then
+		emergency "overlay partition is already mounted"
+	fi
+	[ "$(blkid -p -s TYPE -o value "$OVERLAY_DEVICE")" = ext4 ] || emergency "overlay must be ext4"
+	# e2fsck -p exit codes: 0 = clean, 1 = errors auto-corrected without reboot;
+	# >= 2 requires reboot or manual repair, so stop before mounting rw.
+	e2fsck -p "$OVERLAY_DEVICE" || status=$?
+	case "$status" in
+		0|1) ;;
+		*) emergency "overlay filesystem check failed: $status" ;;
+	esac
+	mount -t ext4 -o rw "$OVERLAY_DEVICE" "$OVERLAY_STORAGE"
+	# Expand the ext4 filesystem on first boot or after GPT partition growth.
+	resize2fs "$OVERLAY_DEVICE"
+}
+
+prepare_cache_directory()
+{
+	[ ! -L "$CACHE" ] || emergency "invalid volatile directory"
+	if [ -e "$CACHE" ]; then
+		[ -d "$CACHE" ] || emergency "invalid volatile directory"
+		[ "$(stat -c %u "$CACHE")" = 0 ] || emergency "invalid volatile directory owner"
+	else
+		mkdir -m 0700 "$CACHE"
+	fi
+}
+
+check_temporary_cache_marker()
+{
+	# Accept an empty or partial prefix of CACHE_VERSION left by an interrupted
+	# initial write, but reject arbitrary bytes so unrecognized data is never wiped.
+	local marker=$1 size
+	if [ -e "$marker" ] || [ -L "$marker" ]; then
+		[ -f "$marker" ] && [ ! -L "$marker" ] || \
+			emergency "invalid temporary volatile layout marker"
+		size=$(stat -c %s "$marker")
+		if [ "$size" -gt 0 ]; then
+			printf '%s\n' "$CACHE_VERSION" | cmp -s -n "$size" - "$marker" || \
+				emergency "unsupported temporary volatile layout"
+		fi
+	fi
+}
+
+check_cache_marker()
+{
+	# Require an explicit layout-version marker before reset_volatile_root() wipes
+	# upper/work. If missing, only an empty dir or a valid .tmp file is recoverable.
+	local marker=$CACHE/layout-version
+	if [ ! -e "$marker" ] && [ ! -L "$marker" ]; then
+		[ -z "$(find "$CACHE" -mindepth 1 -maxdepth 1 ! -name layout-version.tmp -print -quit)" ] || \
+			emergency "unrecognized volatile directory"
+		check_temporary_cache_marker "$marker.tmp"
+		printf '%s\n' "$CACHE_VERSION" > "$marker.tmp"
+		sync -f "$marker.tmp"
+		mv "$marker.tmp" "$marker"
+		sync -f "$CACHE"
+	fi
+	[ -f "$marker" ] && [ ! -L "$marker" ] || emergency "invalid volatile layout marker"
+	[ "$(cat "$marker")" = "$CACHE_VERSION" ] || emergency "unsupported volatile layout"
+}
+
+reset_volatile_root()
+{
+	local directory
+	prepare_cache_directory
+	check_cache_marker
+	chmod 0700 "$CACHE"
+	for directory in "$CACHE/upper" "$CACHE/work"; do
+		[ ! -L "$directory" ] || emergency "invalid volatile layer directory"
+		[ ! -e "$directory" ] || [ -d "$directory" ] || emergency "invalid volatile layer directory"
+		# Only disposable layers are removed, never the storage root or sibling data.
+		rm -rf --one-file-system -- "$directory"
+		mkdir -m 0755 "$directory"
+	done
+}
+
+prepare_overlay()
+{
+	mount -t overlay overlay -o \
+		"lowerdir=$STATE/root-ro,upperdir=$CACHE/upper,workdir=$CACHE/work,$OVERLAY_OPTIONS" \
+		"$NEW_ROOT"
+	[ -d "$NEW_ROOT/overlay" ] && [ ! -L "$NEW_ROOT/overlay" ] || emergency "invalid /overlay mountpoint"
+	mount --bind "$OVERLAY_STORAGE" "$NEW_ROOT/overlay"
+}
+
+prepare_shutdown()
+{
+	# systemd later pivots into /run/initramfs and executes /shutdown as PID 1.
+	# Stage the static BusyBox interpreter and script off the old root, and bind
+	# OVERLAY_STORAGE so anima-shutdown can unmount /overlay-storage last.
+	local ram=/run/initramfs payload=$STATE/root-ro/usr/sbin/anima-shutdown old_device
+	local busybox=$STATE/root-ro/usr/bin/busybox
+	[ -f "$payload" ] && [ -x "$payload" ] && [ ! -L "$payload" ] || emergency "missing anima-shutdown"
+	[ -f "$busybox" ] && [ -x "$busybox" ] &&
+		[ ! -L "$busybox" ] || emergency "missing shutdown BusyBox"
+	# Record the OverlayFS root's anonymous MAJ:MIN and the underlying ext4 MAJ:MIN
+	# now so shutdown verifies against boot facts instead of probing /overlay.
+	old_device=$(findmnt -rn -o MAJ:MIN -M "$NEW_ROOT")
+	mkdir "$ram"
+	mount -t tmpfs -o mode=0700,nosuid,nodev,size=4M tmpfs "$ram"
+	mkdir "$ram"/{bin,dev,proc,sys,run,oldroot,overlay-storage}
+	mount --bind "$OVERLAY_STORAGE" "$ram/overlay-storage"
+	printf '%s %s\n' "$old_device" "$OVERLAY_DEVICE_NUMBER" > "$ram/devices"
+	cp "$busybox" "$ram/bin/busybox"
+	ln -s busybox "$ram/bin/sh"
+	# Smoke-test BusyBox at boot so bad arch or dynamic-link errors fail early.
+	"$ram/bin/busybox" true
+	cp "$payload" "$ram/shutdown.new"
+	mv "$ram/shutdown.new" "$ram/shutdown"
+}
+
+mount_slot_files()
+{
+	# fstab is generated per boot. machine-id is copied into the volatile root
+	# rather than bind-mounted (compatible with empty slot placeholder permissions);
+	# the shared identity in $PERSISTENT/state stays authoritative.
+	local fstab=$NEW_ROOT/etc/fstab machine_id=$NEW_ROOT/etc/machine-id
+	[ -f "$fstab" ] && [ ! -L "$fstab" ] || emergency "invalid fstab mount point"
+	if [ -L "$machine_id" ] || { [ -e "$machine_id" ] && [ ! -f "$machine_id" ]; }; then
+		emergency "invalid machine-id target"
+	fi
+	mount -o bind,ro "$STATE/fstab" "$fstab"
+	cp -f "$PERSISTENT/state/etc/machine-id" "$machine_id"
+	chown 0:0 "$machine_id"
+	chmod 0444 "$machine_id"
+}
+
+prepare_systemd()
+{
+	# Block unattended apt runs: root is volatile so background upgrades would
+	# waste flash writes in upper and vanish on reboot.
+	local unit
+	mkdir -p "$NEW_ROOT$OLD_ROOT" /run/systemd/system
+	for unit in apt-daily.timer apt-daily.service apt-daily-upgrade.timer apt-daily-upgrade.service; do
+		ln -s /dev/null "/run/systemd/system/$unit"
+	done
+}
+
+switch_to_overlay()
+{
+	cd /
+	pivot_root "$NEW_ROOT" "$NEW_ROOT$OLD_ROOT"
+	cd /
+}
+
+handoff_mounts()
+{
+	local path
+	for path in dev proc sys run; do
+		mount --move "$OLD_ROOT/$path" "/$path"
+	done
+	# Keep the original root available for diagnostics, separate from the overlay lower bind.
+	mount --move "$OLD_ROOT" "$STATE/init-root"
+	rmdir "$OLD_ROOT"
+}
+
+if [ "$$" != 1 ]; then
+	echo "anima-init: must run as PID 1" >&2
+	exit 1
+fi
+trap 'emergency "command failed at line $LINENO"' ERR
+
+# Phase 1: lock the system slot read-only, bring up /run and ext4 overlay storage.
+mount_api_filesystems
+protect_root
+prepare_runtime
+find_overlay_partition
+mount_overlay_storage
+
+# Phase 2: validate the whole manifest and base fstab before mutating storage.
+load_persistent_config
+validate_persistent_layout
+reset_volatile_root
+prepare_overlay
+prepare_shutdown
+
+# Phase 3: initialize identity and missing persistent entries, then apply init
+# mounts and generate runtime fstab before systemd generators run.
+prepare_persistent_storage
+mount_persistent_paths
+mount_persistent_seed
+generate_persistent_fstab
+mount_slot_files
+prepare_systemd
+
+# Phase 4: pivot into NEW_ROOT first, then move /dev /proc /sys /run so
+# /run/anima/* and /run/initramfs keep identical absolute paths for systemd.
+switch_to_overlay
+handoff_mounts
+echo "anima-init: root and persistent overlays ready; starting /sbin/init"
+exec /sbin/init "$@"
