@@ -48,10 +48,19 @@ if [ ! -d $TARGET_ROOTFS_DIR ] ; then
 
     if [ ! -e ubuntu-base-${UBUNTU_RELEASE}-base-$ARCH.tar.gz ]; then
         echo "\033[36m wget ubuntu-base-${UBUNTU_RELEASE}-base-"$ARCH".tar.gz \033[0m"
-		wget -c https://mirrors.ustc.edu.cn/ubuntu-cdimage/ubuntu-base/releases/${UBUNTU_VERSION}/release/ubuntu-base-${UBUNTU_RELEASE}-base-$ARCH.tar.gz
+        BASE_ARCHIVE="ubuntu-base-${UBUNTU_RELEASE}-base-${ARCH}.tar.gz"
+        BASE_REL="releases/${UBUNTU_VERSION}/release/${BASE_ARCHIVE}"
+        rm -f "${BASE_ARCHIVE}.part"
+        if ! wget -O "${BASE_ARCHIVE}.part" "https://mirrors.ustc.edu.cn/ubuntu-cdimage/ubuntu-base/${BASE_REL}"; then
+            rm -f "${BASE_ARCHIVE}.part"
+            wget -O "${BASE_ARCHIVE}.part" "https://cdimage.ubuntu.com/ubuntu-base/${BASE_REL}"
+        fi
+        mv -f "${BASE_ARCHIVE}.part" "${BASE_ARCHIVE}"
     fi
     sudo tar -xpf ubuntu-base-${UBUNTU_RELEASE}-base-$ARCH.tar.gz -C $TARGET_ROOTFS_DIR/
     sudo cp -L /etc/resolv.conf $TARGET_ROOTFS_DIR/etc/resolv.conf
+    sudo cp overlay/etc/apt/mirrors.txt \
+        $TARGET_ROOTFS_DIR/etc/apt/mirrors.txt
     sudo cp overlay/etc/apt/sources.list.d/ubuntu.sources \
         $TARGET_ROOTFS_DIR/etc/apt/sources.list.d/ubuntu.sources
 

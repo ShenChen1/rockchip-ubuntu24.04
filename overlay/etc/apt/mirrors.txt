@@ -1,0 +1,2 @@
+http://mirrors.ustc.edu.cn/ubuntu-ports/	priority:1
+http://ports.ubuntu.com/ubuntu-ports/	priority:2

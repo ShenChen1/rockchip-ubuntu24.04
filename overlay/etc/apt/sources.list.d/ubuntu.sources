@@ -1,5 +1,5 @@
 Types: deb
-URIs: http://mirrors.ustc.edu.cn/ubuntu-ports/
+URIs: mirror+file:/etc/apt/mirrors.txt
 Suites: noble noble-updates noble-security noble-backports
 Components: main restricted universe multiverse
 Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
