@@ -188,14 +188,6 @@ systemctl mask wpa_supplicant-wired@
 systemctl mask wpa_supplicant-nl80211@
 systemctl mask wpa_supplicant@
 
-# Make systemd less spammy
-
-sed -i 's/#LogLevel=info/LogLevel=warning/' \
-  /etc/systemd/system.conf
-
-sed -i 's/#LogTarget=journal-or-kmsg/LogTarget=journal/' \
-  /etc/systemd/system.conf
-
 # check to make sure sudoers file has ref for the sudo group
 SUDOEXISTS="$(awk '$1 == "%sudo" { print $1 }' /etc/sudoers)"
 if [ -z "$SUDOEXISTS" ]; then
@@ -218,6 +210,10 @@ rm -rf /var/lib/apt/lists/*
 sync
 
 EOF
+
+# Keep package conffiles untouched so later upgrades can replace their defaults.
+sudo install -D -m 0644 overlay/etc/systemd/system.conf.d/60-anima.conf \
+    "$TARGET_ROOTFS_DIR/etc/systemd/system.conf.d/60-anima.conf"
 
 ./ch-mount.sh -u $TARGET_ROOTFS_DIR
 
