@@ -320,15 +320,15 @@ resume_wifibt()
 
 case "$1" in
 	start | restart | start_wifi | start_bt | "")
-		# Run in foreground so the oneshot unit orders Wi-Fi/BT bring-up
-		# before network.target and bluetooth.target.
 		start_wifibt "${1:-start}"
 		;;
 	stop) stop_wifibt ;;
+	stop_wifi) stop_wifi ;;
+	stop_bt) stop_bt ;;
 	suspend) suspend_wifibt ;;
 	resume) resume_wifibt & ;;
 	*)
-		echo "Usage: [start|stop|start_wifi|start_bt|restart|suspend|resume]" >&2
+		echo "Usage: [start|stop|start_wifi|stop_wifi|start_bt|stop_bt|restart|suspend|resume]" >&2
 		exit 3
 		;;
 esac

@@ -394,7 +394,7 @@ echo -e "\033[47;36m ------- Custom Script ------- \033[0m"
 systemctl mask systemd-networkd-wait-online.service
 systemctl mask NetworkManager-wait-online.service
 systemctl disable hostapd
-systemctl enable wifibt-init
+systemctl enable wifi-init.service bt-init.service
 rm /lib/systemd/system/wpa_supplicant@.service
 if [ "$TARGET" == "server" ]; then
     # Server images run without X11; avoid invoking xrandr drm-hotplug on boot.

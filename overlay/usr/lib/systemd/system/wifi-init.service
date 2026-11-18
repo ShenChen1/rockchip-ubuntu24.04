@@ -1,0 +1,15 @@
+[Unit]
+Description=Initialize Rockchip Wi-Fi
+DefaultDependencies=no
+After=local-fs.target systemd-udev-trigger.service
+Before=network.target shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/wifibt-init.sh start_wifi
+ExecStop=/usr/bin/wifibt-init.sh stop_wifi
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

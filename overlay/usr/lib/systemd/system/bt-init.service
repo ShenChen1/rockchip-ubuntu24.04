@@ -1,0 +1,14 @@
+[Unit]
+Description=Initialize Rockchip Bluetooth
+Requires=wifi-init.service
+After=wifi-init.service
+Before=bluetooth.service bluetooth.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/wifibt-init.sh start_bt
+ExecStop=/usr/bin/wifibt-init.sh stop_bt
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
