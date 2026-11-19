@@ -108,10 +108,11 @@ fi
 \${APT_INSTALL} net-tools openssh-server ifupdown psmisc alsa-utils network-manager inetutils-ping \
     vsftpd can-utils i2c-tools ethtool netplan.io toilet htop pciutils usbutils \
     curl whiptail gnupg bc xinput gdisk parted sox libsox-fmt-all gpiod python3-libgpiod \
-    u-boot-tools bash-completion wget git python3 python3-venv util-linux-extra libgl1 libglib2.0-0 ffmpeg libportaudio2
+    u-boot-tools bash-completion wget git python3 python3-venv util-linux-extra libgl1 libglib2.0-0
 
 if [ "$TARGET" == "server" ]; then
-    \${APT_INSTALL} pulseaudio || exit \$?
+    \${APT_INSTALL} --no-install-recommends --no-install-suggests ffmpeg || exit \$?
+    \${APT_INSTALL} pulseaudio libportaudio2 || exit \$?
     # pip recommends build-essential and python3-dev; Hub uses prebuilt wheels.
     \${APT_INSTALL} --no-install-recommends python3-pip vim-tiny || exit \$?
 else

@@ -218,7 +218,9 @@ sudo cp -rpf packages/$ARCH/* $TARGET_ROOTFS_DIR/packages
 install_packages
 sudo mkdir -p $TARGET_ROOTFS_DIR/packages/install_packages
 sudo cp -rpfv packages/$ARCH/libmali/$MALI_PKG.deb $TARGET_ROOTFS_DIR/packages/install_packages
-sudo cp -rpfv packages/$ARCH/${ISP:0:5}/camera_engine_$ISP*.deb $TARGET_ROOTFS_DIR/packages/install_packages
+if [ "$TARGET" != "server" ]; then
+    sudo cp -rpfv packages/$ARCH/${ISP:0:5}/camera_engine_$ISP*.deb $TARGET_ROOTFS_DIR/packages/install_packages
+fi
 
 if [ "$VERSION" != "debug" ]; then
     prune_vendor_packages "$TARGET_ROOTFS_DIR/packages"
