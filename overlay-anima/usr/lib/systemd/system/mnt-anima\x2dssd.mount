@@ -1,0 +1,13 @@
+[Unit]
+Description=Mount Anima SSD data partition
+Requires=systemd-fsck@dev-anima\x2dssd.service
+After=systemd-fsck@dev-anima\x2dssd.service
+ConditionPathIsSymbolicLink=!%f
+ConditionPathIsMountPoint=!%f
+ConditionDirectoryNotEmpty=!%f
+
+[Mount]
+What=/dev/anima-ssd
+Where=/mnt/anima-ssd
+Type=ext4
+Options=defaults,nofail

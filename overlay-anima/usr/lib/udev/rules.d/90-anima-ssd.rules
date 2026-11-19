@@ -1,0 +1,2 @@
+ACTION=="add", SUBSYSTEM=="block", KERNEL=="nvme[0-9]*n[0-9]*", ENV{DEVTYPE}=="disk", ATTR{hidden}!="1", ATTR{ro}=="0", ENV{DISKSEQ}=="?*", ENV{ID_FS_TYPE}=="", ENV{ID_PART_TABLE_TYPE}=="", TAG+="systemd", ENV{SYSTEMD_WANTS}+="anima-ssd-init@$env{DISKSEQ}.service"
+ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="nvme[0-9]*n[0-9]*p[0-9]*", ENV{DEVTYPE}=="partition", ENV{ID_FS_TYPE}=="ext4", ENV{ID_FS_LABEL_ENC}=="ANIMA_DATA", SYMLINK+="anima-ssd", RUN+="/usr/bin/systemctl --no-block start mnt-anima\x2dssd.mount"

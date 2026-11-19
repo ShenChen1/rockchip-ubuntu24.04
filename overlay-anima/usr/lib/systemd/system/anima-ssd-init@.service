@@ -1,0 +1,10 @@
+[Unit]
+Description=Initialize empty NVMe disk (disk sequence %i)
+BindsTo=dev-disk-by\x2ddiskseq-%i.device
+After=dev-disk-by\x2ddiskseq-%i.device
+
+[Service]
+Type=oneshot
+ExecCondition=/bin/sh -c 'sig=$(/usr/sbin/wipefs --noheadings --output TYPE "$1") && [ -z "$sig" ]' _ /dev/disk/by-diskseq/%i
+ExecStart=/usr/bin/systemd-repart --dry-run=no --empty=require --discard=no --seed=random --definitions=/usr/lib/anima/ssd-repart.d /dev/disk/by-diskseq/%i
+TimeoutStartSec=10min
