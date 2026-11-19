@@ -35,6 +35,7 @@ else
     echo -e "\033[47;36m set default ARCH=arm64...... \033[0m"
 fi
 
+TARGET_HOSTNAME=${RK_ROOTFS_HOSTNAME:-ubuntu}
 TARGET_ROOTFS_DIR="binary"
 
 sudo rm -rf $TARGET_ROOTFS_DIR/
@@ -82,7 +83,7 @@ echo -e "\033[47;36m Change root.................... \033[0m"
 
 ./ch-mount.sh -m $TARGET_ROOTFS_DIR
 
-cat <<EOF | sudo chroot $TARGET_ROOTFS_DIR/
+cat <<EOF | sudo chroot "$TARGET_ROOTFS_DIR" /usr/bin/env TARGET_HOSTNAME="$TARGET_HOSTNAME" /bin/bash
 
 export DEBIAN_FRONTEND=noninteractive
 export APT_INSTALL="apt-get install -fy --allow-downgrades"
@@ -160,16 +161,9 @@ elif [ "$TARGET" == "server" ]; then
     \${APT_INSTALL}  
 fi
 
-HOST=anima
-
 # Create User
-useradd -G sudo -m -s /bin/bash anima
-passwd anima <<IEOF
-anima
-anima
-IEOF
-gpasswd -a anima video
-gpasswd -a anima audio
+useradd -G sudo,video,audio -m -s /bin/bash -- "\$TARGET_HOSTNAME" || exit 1
+printf '%s:%s\n' "\$TARGET_HOSTNAME" "\$TARGET_HOSTNAME" | chpasswd || exit 1
 passwd root <<IEOF
 root
 root
@@ -179,9 +173,9 @@ IEOF
 sed -i '/pam_securetty.so/s/^/# /g' /etc/pam.d/login
 
 # hostname
-echo anima > /etc/hostname
+printf '%s\n' "\$TARGET_HOSTNAME" > /etc/hostname
 echo "127.0.0.1 localhost" > /etc/hosts
-echo "127.0.1.1 anima" >> /etc/hosts
+printf '127.0.1.1 %s\n' "\$TARGET_HOSTNAME" >> /etc/hosts
 
 # set localtime
 #ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
