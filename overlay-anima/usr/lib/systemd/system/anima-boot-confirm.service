@@ -1,0 +1,13 @@
+[Unit]
+Description=Confirm the current A/B boot slot
+Requires=anima-hub.target
+After=anima-hub.target
+ConditionFileIsExecutable=/usr/bin/updateEngine
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/updateEngine --misc=now
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

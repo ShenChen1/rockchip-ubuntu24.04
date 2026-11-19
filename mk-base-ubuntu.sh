@@ -220,10 +220,6 @@ sync
 
 EOF
 
-# Keep package conffiles untouched so later upgrades can replace their defaults.
-sudo install -D -m 0644 overlay/etc/systemd/system.conf.d/60-anima.conf \
-    "$TARGET_ROOTFS_DIR/etc/systemd/system.conf.d/60-anima.conf"
-
 ./ch-mount.sh -u $TARGET_ROOTFS_DIR
 
 DATE=$(date +%Y%m%d)

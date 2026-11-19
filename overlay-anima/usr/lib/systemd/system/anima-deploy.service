@@ -1,0 +1,14 @@
+[Unit]
+Description=Deploy ANIMA applications
+RequiresMountsFor=/opt
+AssertPathIsMountPoint=/opt
+Before=anima-hub.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Replace ExecStart with the board's deployment command as needed.
+ExecStart=/usr/bin/true
+ExecStartPost=/usr/bin/systemctl daemon-reload
+# Enqueue dependencies added by deployment while the Hub still waits for us.
+ExecStartPost=/usr/bin/systemctl --no-block start anima-hub.target

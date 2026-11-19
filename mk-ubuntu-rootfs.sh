@@ -244,6 +244,13 @@ if [ "$VERSION" == "debug" ]; then
     sudo cp -rpf --no-preserve=ownership overlay-debug/* $TARGET_ROOTFS_DIR/
 fi
 
+# overlay-anima folder
+if [[ ${RK_ROOTFS_HOSTNAME:-} == anima ]]; then
+    (set -o pipefail
+     tar -C overlay-anima -cf - . |
+         sudo tar -C "$TARGET_ROOTFS_DIR" --no-overwrite-dir --no-same-owner -xpf -)
+fi
+
 ## hack the serial
 sudo cp -f overlay/usr/lib/systemd/system/serial-getty@.service $TARGET_ROOTFS_DIR/lib/systemd/system/serial-getty@.service
 
