@@ -1,0 +1,4 @@
+[Unit]
+Description=ANIMA deployment configuration ready
+Requires=anima-deploy.service
+After=anima-deploy.service

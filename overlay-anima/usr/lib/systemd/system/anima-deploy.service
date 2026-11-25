@@ -2,13 +2,16 @@
 Description=Deploy ANIMA applications
 RequiresMountsFor=/opt
 AssertPathIsMountPoint=/opt
-Before=anima-hub.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-# Replace ExecStart with the board's deployment command as needed.
-ExecStart=/usr/bin/true
+# This root-owned launcher must finish writing service configuration before returning.
+# Queue starts of units ordered after anima-deploy.target without blocking.
+ExecCondition=/usr/bin/test -e /opt/anima-hub-runtime/start-hub.sh
+ExecStart=/opt/anima-hub-runtime/start-hub.sh
+ExecStartPost=/usr/bin/touch /run/anima-deploy.ready
 ExecStartPost=/usr/bin/systemctl daemon-reload
 # Enqueue dependencies added by deployment while the Hub still waits for us.
 ExecStartPost=/usr/bin/systemctl --no-block start anima-hub.target
+ExecStopPost=/usr/bin/rm -f /run/anima-deploy.ready
