@@ -1,0 +1,2 @@
+# Defaults file for wsdd-server (overrides /etc/default/wsdd)
+WSDD_PARAMS="--hostname ANIMA-HUB --preserve-case"

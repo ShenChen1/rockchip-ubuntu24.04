@@ -294,6 +294,11 @@ elif [[ "$TARGET" == "xfce" || "$TARGET" == "xfce-full" ]]; then
     ln -sf /usr/share/xfce4/backdrops/anima-wallpaper.png /usr/share/xfce4/backdrops/xubuntu-wallpaper.png
 elif [ "$TARGET" == "server" ]; then
     \${APT_INSTALL} bluez bluez-tools
+    if [ "${RK_ROOTFS_HOSTNAME:-}" = "anima" ]; then
+        \${APT_INSTALL} --no-install-recommends redis-server samba wsdd wsdd-server iptables || exit 1
+        update-alternatives --set iptables /usr/sbin/iptables-legacy || exit 1
+        update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy || exit 1
+    fi
 fi
 
 \${APT_INSTALL} /packages/install_packages/*.deb
