@@ -163,7 +163,8 @@ elif [ "$TARGET" == "server" ]; then
 fi
 
 # Create User
-useradd -G sudo,video,audio -m -s /bin/bash -- "\$TARGET_HOSTNAME" || exit 1
+USER_GROUPS=sudo,video,audio,netdev
+useradd -G "\$USER_GROUPS" -m -s /bin/bash -- "\$TARGET_HOSTNAME" || exit 1
 printf '%s:%s\n' "\$TARGET_HOSTNAME" "\$TARGET_HOSTNAME" | chpasswd || exit 1
 passwd root <<IEOF
 root
